@@ -27,4 +27,10 @@ services:
         deploy-webhook:Deploy Webhook,
         buda-bot:Buda Bot,
         beacon:Beacon,
-        lookout:Lookout
+        lookout:Lookout,
+        bosun:Bosun,
+        sextant:Sextant
+      - >-
+        ENDPOINTS=https://cyanez.cl:Blog,
+        https://git.cyanez.cl:Forgejo
+      - SHOW_RESPONSE_TIME=true
