@@ -29,7 +29,8 @@ services:
         beacon:Beacon,
         lookout:Lookout,
         bosun:Bosun,
-        sextant:Sextant
+        sextant:Sextant,
+        drift:Drift
       - >-
         ENDPOINTS=https://cyanez.cl:Blog,
         https://git.cyanez.cl:Forgejo
