@@ -27,4 +27,10 @@ services:
         deploy-webhook:Deploy Webhook,
         my-app:My App,
         beacon:Beacon,
-        lookout:Lookout
+        lookout:Lookout,
+        bosun:Bosun,
+        sextant:Sextant
+      - >-
+        ENDPOINTS=https://example.com:Blog,
+        https://git.example.com:Forgejo
+      - SHOW_RESPONSE_TIME=true
