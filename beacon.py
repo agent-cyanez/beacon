@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Beacon — lightweight Docker status page. Zero dependencies."""
 
+import fnmatch
 import html
 import http.client
 import http.server
@@ -8,9 +9,11 @@ import json
 import os
 import signal
 import socket
+import ssl
 import sys
 import threading
 import time
+import urllib.request
 
 
 DOCKER_SOCKET = os.environ.get("DOCKER_HOST", "/var/run/docker.sock")
@@ -19,6 +22,8 @@ POLL_INTERVAL = int(os.environ.get("POLL_INTERVAL", "15"))
 SITE_TITLE = os.environ.get("SITE_TITLE", "Service Status")
 SITE_DESCRIPTION = os.environ.get("SITE_DESCRIPTION", "")
 SERVICES = os.environ.get("SERVICES", "")
+ENDPOINTS = os.environ.get("ENDPOINTS", "")
+ENDPOINT_TIMEOUT = int(os.environ.get("ENDPOINT_TIMEOUT", "10"))
 SHOW_RESPONSE_TIME = os.environ.get("SHOW_RESPONSE_TIME", "false").lower() == "true"
 
 
@@ -89,14 +94,82 @@ def uptime_text(c):
     return ""
 
 
+def match_service(name, service_filter):
+    for pattern, display in service_filter.items():
+        if fnmatch.fnmatch(name, pattern):
+            return display
+    return None
+
+
+def parse_endpoints_config(raw):
+    if not raw.strip():
+        return []
+    endpoints = []
+    for entry in raw.split(","):
+        entry = entry.strip()
+        if not entry:
+            continue
+        last_colon = entry.rfind(":")
+        scheme_end = entry.find("://")
+        if last_colon > scheme_end + 2:
+            url = entry[:last_colon].strip()
+            name = entry[last_colon + 1:].strip()
+        else:
+            url = entry
+            name = url.replace("https://", "").replace("http://", "").split("/")[0]
+        endpoints.append({"url": url, "name": name})
+    return endpoints
+
+
+def check_endpoint(url, timeout):
+    try:
+        start = time.monotonic()
+        ctx = ssl.create_default_context()
+        req = urllib.request.Request(url, method="GET")
+        req.add_header("User-Agent", "Beacon/1.0")
+        with urllib.request.urlopen(req, timeout=timeout, context=ctx) as resp:
+            elapsed_ms = int((time.monotonic() - start) * 1000)
+            code = resp.getcode()
+            if 200 <= code < 400:
+                return "operational", "Operational", elapsed_ms
+            return "degraded", f"HTTP {code}", elapsed_ms
+    except urllib.error.HTTPError as e:
+        elapsed_ms = int((time.monotonic() - start) * 1000)
+        if e.code >= 500:
+            return "down", f"HTTP {e.code}", elapsed_ms
+        return "degraded", f"HTTP {e.code}", elapsed_ms
+    except Exception:
+        return "down", "Unreachable", None
+
+
+def collect_endpoint_status(endpoints, timeout):
+    results = []
+    for ep in endpoints:
+        level, label, response_ms = check_endpoint(ep["url"], timeout)
+        results.append({
+            "name": ep["name"],
+            "level": level,
+            "label": label,
+            "uptime": "",
+            "response_ms": response_ms,
+        })
+    return results
+
+
+_LEVEL_RANK = {"operational": 0, "degraded": 1, "down": 2, "unknown": 3}
+
+
 def collect_status(docker, service_filter):
     containers = docker.containers(all_containers=True)
     results = []
     for c in containers:
         name = container_name(c)
-        if service_filter and name not in service_filter:
-            continue
-        display = service_filter.get(name, name) if service_filter else name
+        if service_filter:
+            display = match_service(name, service_filter)
+            if display is None:
+                continue
+        else:
+            display = name
         level, label = container_status(c)
         uptime = uptime_text(c)
         results.append({
@@ -104,7 +177,17 @@ def collect_status(docker, service_filter):
             "level": level,
             "label": label,
             "uptime": uptime,
+            "response_ms": None,
         })
+    # When glob patterns match multiple containers to the same display name,
+    # keep only the best-status one (e.g. running blog, not old _replaced_ copies).
+    if service_filter:
+        best = {}
+        for s in results:
+            existing = best.get(s["name"])
+            if existing is None or _LEVEL_RANK.get(s["level"], 9) < _LEVEL_RANK.get(existing["level"], 9):
+                best[s["name"]] = s
+        results = list(best.values())
     results.sort(key=lambda s: s["name"].lower())
     return results
 
@@ -239,24 +322,26 @@ footer a:hover {{ text-decoration: underline; }}
 SERVICE_ROW = """<div class="service">
   <span class="service-name">{name}</span>
   <div class="service-right">
-    {uptime_html}
+    {meta_html}
     <span class="badge {level}">{label}</span>
   </div>
 </div>"""
 
 
-def render_page(services, title, description):
+def render_page(services, title, description, show_response_time=False):
     level, label = overall_status(services)
     rows = []
     for s in services:
-        uptime_html = ""
-        if s["uptime"]:
-            uptime_html = f'<span class="service-uptime">{html.escape(s["uptime"])}</span>'
+        meta_html = ""
+        if s.get("uptime"):
+            meta_html = f'<span class="service-uptime">{html.escape(s["uptime"])}</span>'
+        elif show_response_time and s.get("response_ms") is not None:
+            meta_html = f'<span class="service-uptime">{s["response_ms"]}ms</span>'
         rows.append(SERVICE_ROW.format(
             name=html.escape(s["name"]),
             level=s["level"],
             label=html.escape(s["label"]),
-            uptime_html=uptime_html,
+            meta_html=meta_html,
         ))
     desc_html = ""
     if description:
@@ -314,11 +399,14 @@ class Handler(http.server.BaseHTTPRequestHandler):
         pass
 
 
-def poller(docker, service_filter, title, description):
+def poller(docker, service_filter, endpoints, endpoint_timeout, title, description,
+           show_response_time):
     while True:
         try:
             services = collect_status(docker, service_filter)
-            page = render_page(services, title, description)
+            if endpoints:
+                services.extend(collect_endpoint_status(endpoints, endpoint_timeout))
+            page = render_page(services, title, description, show_response_time)
             store.update(page)
         except Exception as e:
             print(f"[poller error] {e}", file=sys.stderr)
@@ -336,14 +424,25 @@ def main():
     else:
         print("  Services: all containers")
 
+    endpoints = parse_endpoints_config(ENDPOINTS)
+    if endpoints:
+        print(f"  Endpoints: {', '.join(e['name'] for e in endpoints)}")
+
     docker = DockerClient(DOCKER_SOCKET)
 
     services = collect_status(docker, service_filter)
-    page = render_page(services, SITE_TITLE, SITE_DESCRIPTION)
+    if endpoints:
+        services.extend(collect_endpoint_status(endpoints, ENDPOINT_TIMEOUT))
+    page = render_page(services, SITE_TITLE, SITE_DESCRIPTION, SHOW_RESPONSE_TIME)
     store.update(page)
     print(f"  Found {len(services)} services")
 
-    t = threading.Thread(target=poller, args=(docker, service_filter, SITE_TITLE, SITE_DESCRIPTION), daemon=True)
+    t = threading.Thread(
+        target=poller,
+        args=(docker, service_filter, endpoints, ENDPOINT_TIMEOUT,
+              SITE_TITLE, SITE_DESCRIPTION, SHOW_RESPONSE_TIME),
+        daemon=True,
+    )
     t.start()
 
     server = http.server.HTTPServer(("0.0.0.0", LISTEN_PORT), Handler)

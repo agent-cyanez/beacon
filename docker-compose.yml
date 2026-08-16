@@ -9,9 +9,22 @@ services:
       - /var/run/docker.sock:/var/run/docker.sock:ro
     environment:
       - SITE_TITLE=Service Status
-      # - SITE_DESCRIPTION=Current status of our self-hosted services
+      - SITE_DESCRIPTION=Vela NAS — self-hosted services
       - POLL_INTERVAL=15
-      # Comma-separated list of containers to show.
-      # Format: container_name:Display Name, or just container_name
-      # Leave empty to show all containers.
-      # - SERVICES=immich_server:Immich,forgejo:Forgejo,ntfy:Notifications
+      # Glob patterns supported (fnmatch).
+      # Format: pattern:Display Name (or just pattern)
+      - >-
+        SERVICES=ntfy:Notifications,
+        forgejo:Forgejo,
+        syncthing:Syncthing,
+        filebrowser:File Browser,
+        homepage:Homepage,
+        immich_server:Immich,
+        blog-web-*:Blog,
+        kobo-article-pipeline-wallabag-1:Wallabag,
+        vikunja:Vikunja,
+        walkingpad:WalkingPad,
+        deploy-webhook:Deploy Webhook,
+        buda-bot:Buda Bot,
+        beacon:Beacon,
+        lookout:Lookout
