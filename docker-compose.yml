@@ -1,0 +1,17 @@
+services:
+  beacon:
+    build: .
+    container_name: beacon
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:8585:8585"
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+    environment:
+      - SITE_TITLE=Service Status
+      # - SITE_DESCRIPTION=Current status of our self-hosted services
+      - POLL_INTERVAL=15
+      # Comma-separated list of containers to show.
+      # Format: container_name:Display Name, or just container_name
+      # Leave empty to show all containers.
+      # - SERVICES=immich_server:Immich,forgejo:Forgejo,ntfy:Notifications
