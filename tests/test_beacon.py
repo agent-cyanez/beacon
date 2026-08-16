@@ -1,6 +1,8 @@
 """Unit tests for Beacon — Docker status page."""
 
 import unittest
+from unittest.mock import patch, MagicMock
+import urllib.error
 import beacon
 
 
@@ -23,6 +25,90 @@ class TestParseServicesConfig(unittest.TestCase):
     def test_whitespace(self):
         result = beacon.parse_services_config(" app , db : Database ")
         self.assertEqual(result, {"app": "app", "db": "Database"})
+
+
+class TestParseEndpointsConfig(unittest.TestCase):
+    def test_empty(self):
+        self.assertEqual(beacon.parse_endpoints_config(""), [])
+
+    def test_url_with_name(self):
+        result = beacon.parse_endpoints_config("https://example.com:Example")
+        self.assertEqual(result, [{"url": "https://example.com", "name": "Example"}])
+
+    def test_url_without_name(self):
+        result = beacon.parse_endpoints_config("https://example.com")
+        self.assertEqual(result, [{"url": "https://example.com", "name": "example.com"}])
+
+    def test_url_with_path(self):
+        result = beacon.parse_endpoints_config("https://example.com/health")
+        self.assertEqual(result, [{"url": "https://example.com/health", "name": "example.com"}])
+
+    def test_multiple(self):
+        result = beacon.parse_endpoints_config(
+            "https://a.com:Alpha,https://b.com:Beta"
+        )
+        self.assertEqual(len(result), 2)
+        self.assertEqual(result[0]["name"], "Alpha")
+        self.assertEqual(result[1]["name"], "Beta")
+
+    def test_http_url_with_port(self):
+        result = beacon.parse_endpoints_config("http://localhost:8080:Local")
+        self.assertEqual(result, [{"url": "http://localhost:8080", "name": "Local"}])
+
+    def test_whitespace(self):
+        result = beacon.parse_endpoints_config(" https://a.com : Alpha ")
+        self.assertEqual(result[0]["url"], "https://a.com")
+        self.assertEqual(result[0]["name"], "Alpha")
+
+
+class TestCheckEndpoint(unittest.TestCase):
+    @patch("beacon.urllib.request.urlopen")
+    def test_success(self, mock_urlopen):
+        mock_resp = MagicMock()
+        mock_resp.getcode.return_value = 200
+        mock_resp.__enter__ = lambda s: s
+        mock_resp.__exit__ = MagicMock(return_value=False)
+        mock_urlopen.return_value = mock_resp
+
+        level, label, ms = beacon.check_endpoint("https://example.com", 5)
+        self.assertEqual(level, "operational")
+        self.assertIsNotNone(ms)
+
+    @patch("beacon.urllib.request.urlopen")
+    def test_server_error(self, mock_urlopen):
+        mock_urlopen.side_effect = urllib.error.HTTPError(
+            "https://example.com", 500, "Server Error", {}, None
+        )
+        level, label, ms = beacon.check_endpoint("https://example.com", 5)
+        self.assertEqual(level, "down")
+        self.assertIn("500", label)
+
+    @patch("beacon.urllib.request.urlopen")
+    def test_client_error(self, mock_urlopen):
+        mock_urlopen.side_effect = urllib.error.HTTPError(
+            "https://example.com", 403, "Forbidden", {}, None
+        )
+        level, label, ms = beacon.check_endpoint("https://example.com", 5)
+        self.assertEqual(level, "degraded")
+
+    @patch("beacon.urllib.request.urlopen")
+    def test_timeout(self, mock_urlopen):
+        mock_urlopen.side_effect = TimeoutError("timed out")
+        level, label, ms = beacon.check_endpoint("https://example.com", 5)
+        self.assertEqual(level, "down")
+        self.assertEqual(label, "Unreachable")
+        self.assertIsNone(ms)
+
+
+class TestCollectEndpointStatus(unittest.TestCase):
+    @patch("beacon.check_endpoint")
+    def test_collects(self, mock_check):
+        mock_check.return_value = ("operational", "Operational", 42)
+        endpoints = [{"url": "https://a.com", "name": "Alpha"}]
+        result = beacon.collect_endpoint_status(endpoints, 5)
+        self.assertEqual(len(result), 1)
+        self.assertEqual(result[0]["name"], "Alpha")
+        self.assertEqual(result[0]["response_ms"], 42)
 
 
 class TestContainerName(unittest.TestCase):
@@ -163,25 +249,57 @@ class TestCollectStatus(unittest.TestCase):
         result = beacon.collect_status(FakeDocker(), {})
         self.assertEqual(len(result), 2)
 
+    def test_includes_response_ms_field(self):
+        class FakeDocker:
+            def containers(self, all_containers=False):
+                return [
+                    {"Names": ["/a"], "Id": "a" * 12, "State": "running", "Status": "Up"},
+                ]
+
+        result = beacon.collect_status(FakeDocker(), {})
+        self.assertIsNone(result[0]["response_ms"])
+
 
 class TestRenderPage(unittest.TestCase):
     def test_renders_html(self):
         services = [
-            {"name": "App", "level": "operational", "label": "Operational", "uptime": "2 hours"},
+            {"name": "App", "level": "operational", "label": "Operational", "uptime": "2 hours", "response_ms": None},
         ]
-        html = beacon.render_page(services, "Test Status", "A test page")
-        self.assertIn("Test Status", html)
-        self.assertIn("A test page", html)
-        self.assertIn("App", html)
-        self.assertIn("Operational", html)
+        result = beacon.render_page(services, "Test Status", "A test page")
+        self.assertIn("Test Status", result)
+        self.assertIn("A test page", result)
+        self.assertIn("App", result)
+        self.assertIn("Operational", result)
 
     def test_escapes_html(self):
         services = [
-            {"name": "<script>alert(1)</script>", "level": "operational", "label": "OK", "uptime": ""},
+            {"name": "<script>alert(1)</script>", "level": "operational", "label": "OK", "uptime": "", "response_ms": None},
         ]
-        html = beacon.render_page(services, "Test", "")
-        self.assertNotIn("<script>", html)
-        self.assertIn("&lt;script&gt;", html)
+        result = beacon.render_page(services, "Test", "")
+        self.assertNotIn("<script>", result)
+        self.assertIn("&lt;script&gt;", result)
+
+    def test_shows_response_time(self):
+        services = [
+            {"name": "API", "level": "operational", "label": "Operational", "uptime": "", "response_ms": 42},
+        ]
+        result = beacon.render_page(services, "Test", "", show_response_time=True)
+        self.assertIn("42ms", result)
+
+    def test_hides_response_time_by_default(self):
+        services = [
+            {"name": "API", "level": "operational", "label": "Operational", "uptime": "", "response_ms": 42},
+        ]
+        result = beacon.render_page(services, "Test", "")
+        self.assertNotIn("42ms", result)
+
+    def test_uptime_takes_precedence_over_response_time(self):
+        services = [
+            {"name": "App", "level": "operational", "label": "Operational", "uptime": "2 hours", "response_ms": 42},
+        ]
+        result = beacon.render_page(services, "Test", "", show_response_time=True)
+        self.assertIn("2 hours", result)
+        self.assertNotIn("42ms", result)
 
 
 if __name__ == "__main__":
