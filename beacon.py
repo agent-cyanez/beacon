@@ -547,18 +547,50 @@ def render_page(services, title, description, show_response_time=False, uptime_d
     )
 
 
+def build_api_response(services, uptime_db=None, history_days=90):
+    level, label = overall_status(services)
+    api_services = []
+    for s in services:
+        entry = {
+            "name": s["name"],
+            "level": s["level"],
+            "label": s["label"],
+        }
+        if s.get("uptime"):
+            entry["uptime"] = s["uptime"]
+        if s.get("response_ms") is not None:
+            entry["response_ms"] = s["response_ms"]
+        if uptime_db:
+            pct = uptime_db.overall_uptime(s["name"], history_days)
+            if pct is not None:
+                entry["uptime_pct"] = round(pct, 4)
+        api_services.append(entry)
+    return {
+        "status": {"level": level, "label": label},
+        "services": api_services,
+        "updated": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+    }
+
+
 class StatusStore:
     def __init__(self):
         self._lock = threading.Lock()
         self._html = ""
+        self._api = {}
 
-    def update(self, html_content):
+    def update(self, html_content, api_data=None):
         with self._lock:
             self._html = html_content
+            if api_data is not None:
+                self._api = api_data
 
     def get(self):
         with self._lock:
             return self._html
+
+    def get_api(self):
+        with self._lock:
+            return self._api
 
 
 store = StatusStore()
@@ -571,6 +603,20 @@ class Handler(http.server.BaseHTTPRequestHandler):
             self.send_header("Content-Type", "text/plain")
             self.end_headers()
             self.wfile.write(b"ok")
+            return
+        if self.path == "/api/status":
+            api_data = store.get_api()
+            if not api_data:
+                self.send_response(503)
+                self.send_header("Content-Type", "application/json")
+                self.end_headers()
+                self.wfile.write(b'{"error":"initializing"}')
+                return
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Cache-Control", "no-cache, no-store")
+            self.end_headers()
+            self.wfile.write(json.dumps(api_data).encode())
             return
         content = store.get()
         if not content:
@@ -600,7 +646,8 @@ def poller(docker, service_filter, endpoints, endpoint_timeout, title, descripti
                 uptime_db.record(services)
             page = render_page(services, title, description, show_response_time,
                                uptime_db, history_days)
-            store.update(page)
+            api = build_api_response(services, uptime_db, history_days)
+            store.update(page, api)
         except Exception as e:
             print(f"[poller error] {e}", file=sys.stderr)
         time.sleep(POLL_INTERVAL)
@@ -635,7 +682,8 @@ def main():
         uptime_db.record(services)
     page = render_page(services, SITE_TITLE, SITE_DESCRIPTION, SHOW_RESPONSE_TIME,
                        uptime_db, HISTORY_DAYS)
-    store.update(page)
+    api = build_api_response(services, uptime_db, HISTORY_DAYS)
+    store.update(page, api)
     print(f"  Found {len(services)} services")
 
     t = threading.Thread(
