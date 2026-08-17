@@ -13,6 +13,7 @@ A lightweight, zero-dependency status page for Docker environments. Shows the he
 - Single Python file, zero pip dependencies
 - Queries Docker socket directly
 - Auto-detects container health status
+- **90-day uptime history** with per-day visualization (SQLite-backed, zero new deps)
 - HTTP endpoint monitoring (check if external URLs are reachable)
 - Optional response time display
 - Responsive dark/light theme (follows system preference)
@@ -42,9 +43,13 @@ services:
       - "8585:8585"
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock:ro
+      - beacon-data:/data
     environment:
       - SITE_TITLE=My Services
       - SERVICES=immich_server:Photos,forgejo:Git,ntfy:Notifications
+
+volumes:
+  beacon-data:
 ```
 
 ## Configuration
@@ -62,6 +67,19 @@ All configuration is via environment variables:
 | `POLL_INTERVAL` | `15` | Seconds between Docker queries |
 | `PORT` | `8585` | HTTP server port |
 | `DOCKER_HOST` | `/var/run/docker.sock` | Docker socket path |
+| `HISTORY_DB` | `/data/beacon.db` | SQLite database path for uptime history |
+| `HISTORY_DAYS` | `90` | Number of days to retain in uptime history |
+
+### Uptime History
+
+Beacon records each service's status at every poll interval in a SQLite database (Python stdlib — no new dependencies). The status page displays a colored bar for each service showing daily uptime over the configured period:
+
+- **Green**: 99%+ uptime that day
+- **Yellow**: 95–99% uptime
+- **Red**: Below 95% uptime
+- **Grey**: No data
+
+Mount a volume at `/data` to persist history across container restarts.
 
 ### Service Filter
 

@@ -1,5 +1,8 @@
 """Unit tests for Beacon — Docker status page."""
 
+import os
+import tempfile
+import time
 import unittest
 from unittest.mock import patch, MagicMock
 import urllib.error
@@ -300,6 +303,133 @@ class TestRenderPage(unittest.TestCase):
         result = beacon.render_page(services, "Test", "", show_response_time=True)
         self.assertIn("2 hours", result)
         self.assertNotIn("42ms", result)
+
+
+class TestUptimeDB(unittest.TestCase):
+    def setUp(self):
+        self._tmpdir = tempfile.mkdtemp()
+        self.db_path = os.path.join(self._tmpdir, "test.db")
+
+    def tearDown(self):
+        if os.path.exists(self.db_path):
+            os.unlink(self.db_path)
+        os.rmdir(self._tmpdir)
+
+    def test_creates_db(self):
+        db = beacon.UptimeDB(self.db_path)
+        self.assertTrue(os.path.exists(self.db_path))
+
+    def test_record_and_query(self):
+        db = beacon.UptimeDB(self.db_path)
+        services = [
+            {"name": "App", "level": "operational"},
+            {"name": "DB", "level": "down"},
+        ]
+        db.record(services)
+        pct = db.overall_uptime("App", 1)
+        self.assertEqual(pct, 100.0)
+        pct = db.overall_uptime("DB", 1)
+        self.assertEqual(pct, 0.0)
+
+    def test_overall_uptime_no_data(self):
+        db = beacon.UptimeDB(self.db_path)
+        self.assertIsNone(db.overall_uptime("NoSuch", 1))
+
+    def test_daily_uptime(self):
+        db = beacon.UptimeDB(self.db_path)
+        db.record([{"name": "App", "level": "operational"}])
+        db.record([{"name": "App", "level": "operational"}])
+        db.record([{"name": "App", "level": "down"}])
+        daily = db.daily_uptime("App", 1)
+        self.assertEqual(len(daily), 1)
+        today = time.strftime("%Y-%m-%d", time.localtime())
+        self.assertAlmostEqual(daily[today], 66.67, places=1)
+
+    def test_purges_old_data(self):
+        import sqlite3
+        db = beacon.UptimeDB(self.db_path, history_days=1)
+        conn = sqlite3.connect(self.db_path)
+        old_ts = int(time.time()) - 3 * 86400
+        conn.execute(
+            "INSERT INTO checks (service, level, ts) VALUES (?, ?, ?)",
+            ("Old", "operational", old_ts),
+        )
+        conn.commit()
+        conn.close()
+        db.record([{"name": "New", "level": "operational"}])
+        conn = sqlite3.connect(self.db_path)
+        count = conn.execute("SELECT COUNT(*) FROM checks WHERE service = 'Old'").fetchone()[0]
+        conn.close()
+        self.assertEqual(count, 0)
+
+
+class TestDayClass(unittest.TestCase):
+    def test_none(self):
+        self.assertEqual(beacon.day_class(None), "none")
+
+    def test_good(self):
+        self.assertEqual(beacon.day_class(100.0), "good")
+        self.assertEqual(beacon.day_class(99.0), "good")
+
+    def test_warn(self):
+        self.assertEqual(beacon.day_class(98.9), "warn")
+        self.assertEqual(beacon.day_class(95.0), "warn")
+
+    def test_bad(self):
+        self.assertEqual(beacon.day_class(94.9), "bad")
+        self.assertEqual(beacon.day_class(0.0), "bad")
+
+
+class TestRenderHistory(unittest.TestCase):
+    def test_no_db(self):
+        self.assertEqual(beacon.render_history([], None, 90), "")
+
+    def test_no_services(self):
+        db = MagicMock()
+        self.assertEqual(beacon.render_history([], db, 90), "")
+
+    def test_no_data(self):
+        db = MagicMock()
+        db.daily_uptime.return_value = {}
+        services = [{"name": "App", "level": "operational"}]
+        self.assertEqual(beacon.render_history(services, db, 90), "")
+
+    def test_renders_history(self):
+        tmpdir = tempfile.mkdtemp()
+        db_path = os.path.join(tmpdir, "test.db")
+        db = beacon.UptimeDB(db_path)
+        db.record([{"name": "App", "level": "operational"}])
+        services = [{"name": "App", "level": "operational"}]
+        result = beacon.render_history(services, db, 90)
+        self.assertIn("90-Day Uptime", result)
+        self.assertIn("App", result)
+        self.assertIn("100.00%", result)
+        os.unlink(db_path)
+        os.rmdir(tmpdir)
+
+
+class TestRenderPageWithHistory(unittest.TestCase):
+    def test_renders_without_history(self):
+        services = [
+            {"name": "App", "level": "operational", "label": "Operational", "uptime": "", "response_ms": None},
+        ]
+        result = beacon.render_page(services, "Test", "")
+        self.assertIn("App", result)
+        self.assertNotIn("Day Uptime", result)
+
+    def test_renders_with_history(self):
+        tmpdir = tempfile.mkdtemp()
+        db_path = os.path.join(tmpdir, "test.db")
+        db = beacon.UptimeDB(db_path)
+        services = [
+            {"name": "App", "level": "operational", "label": "Operational", "uptime": "", "response_ms": None},
+        ]
+        db.record(services)
+        result = beacon.render_page(services, "Test", "", uptime_db=db, history_days=7)
+        self.assertIn("7-Day Uptime", result)
+        self.assertIn("App", result)
+        os.unlink(db_path)
+        os.rmdir(tmpdir)
 
 
 if __name__ == "__main__":

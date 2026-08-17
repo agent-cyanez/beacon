@@ -7,6 +7,7 @@ services:
       - "127.0.0.1:8585:8585"
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock:ro
+      - beacon-data:/data
     environment:
       - SITE_TITLE=Service Status
       - SITE_DESCRIPTION=Vela NAS — self-hosted services
@@ -35,3 +36,6 @@ services:
         ENDPOINTS=https://cyanez.cl:Blog,
         https://git.cyanez.cl:Forgejo
       - SHOW_RESPONSE_TIME=true
+
+volumes:
+  beacon-data:

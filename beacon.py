@@ -9,6 +9,7 @@ import json
 import os
 import signal
 import socket
+import sqlite3
 import ssl
 import sys
 import threading
@@ -25,6 +26,67 @@ SERVICES = os.environ.get("SERVICES", "")
 ENDPOINTS = os.environ.get("ENDPOINTS", "")
 ENDPOINT_TIMEOUT = int(os.environ.get("ENDPOINT_TIMEOUT", "10"))
 SHOW_RESPONSE_TIME = os.environ.get("SHOW_RESPONSE_TIME", "false").lower() == "true"
+HISTORY_DB = os.environ.get("HISTORY_DB", "/data/beacon.db")
+HISTORY_DAYS = int(os.environ.get("HISTORY_DAYS", "90"))
+
+
+class UptimeDB:
+    def __init__(self, db_path, history_days=90):
+        self._db_path = db_path
+        self._history_days = history_days
+        os.makedirs(os.path.dirname(db_path) or ".", exist_ok=True)
+        conn = sqlite3.connect(db_path)
+        conn.execute(
+            "CREATE TABLE IF NOT EXISTS checks ("
+            "service TEXT NOT NULL, level TEXT NOT NULL, ts INTEGER NOT NULL)"
+        )
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_checks_service_ts ON checks(service, ts)"
+        )
+        conn.commit()
+        conn.close()
+
+    def record(self, services):
+        ts = int(time.time())
+        conn = sqlite3.connect(self._db_path)
+        conn.executemany(
+            "INSERT INTO checks (service, level, ts) VALUES (?, ?, ?)",
+            [(s["name"], s["level"], ts) for s in services],
+        )
+        cutoff = ts - self._history_days * 86400
+        conn.execute("DELETE FROM checks WHERE ts < ?", (cutoff,))
+        conn.commit()
+        conn.close()
+
+    def daily_uptime(self, service, days=None):
+        days = days or self._history_days
+        cutoff = int(time.time()) - days * 86400
+        conn = sqlite3.connect(self._db_path)
+        rows = conn.execute(
+            "SELECT date(ts, 'unixepoch', 'localtime') AS day, "
+            "COUNT(*) AS total, "
+            "SUM(CASE WHEN level = 'operational' THEN 1 ELSE 0 END) AS up "
+            "FROM checks WHERE service = ? AND ts >= ? "
+            "GROUP BY day ORDER BY day",
+            (service, cutoff),
+        ).fetchall()
+        conn.close()
+        return {row[0]: (row[2] / row[1] * 100) for row in rows}
+
+    def overall_uptime(self, service, days=None):
+        days = days or self._history_days
+        cutoff = int(time.time()) - days * 86400
+        conn = sqlite3.connect(self._db_path)
+        row = conn.execute(
+            "SELECT COUNT(*) AS total, "
+            "SUM(CASE WHEN level = 'operational' THEN 1 ELSE 0 END) AS up "
+            "FROM checks WHERE service = ? AND ts >= ?",
+            (service, cutoff),
+        ).fetchone()
+        conn.close()
+        if not row or row[0] == 0:
+            return None
+        return row[1] / row[0] * 100
 
 
 class DockerClient:
@@ -289,6 +351,67 @@ h1 {{ font-size: 1.5rem; font-weight: 600; }}
 .badge.degraded {{ background: rgba(234,179,8,0.12); color: var(--yellow); }}
 .badge.down {{ background: rgba(239,68,68,0.12); color: var(--red); }}
 .badge.unknown {{ background: rgba(113,113,122,0.12); color: var(--muted); }}
+.history-section {{ margin-top: 1.5rem; }}
+.history-title {{
+  font-size: 0.85rem;
+  font-weight: 500;
+  color: var(--muted);
+  margin-bottom: 0.75rem;
+}}
+.history-row {{
+  padding: 0.75rem 1.25rem;
+  border-bottom: 1px solid var(--border);
+}}
+.history-row:last-child {{ border-bottom: none; }}
+.history-header {{
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 0.4rem;
+}}
+.history-name {{ font-size: 0.85rem; font-weight: 500; }}
+.history-pct {{ font-size: 0.8rem; color: var(--muted); }}
+.uptime-bar {{
+  display: flex;
+  gap: 1px;
+  height: 24px;
+  align-items: stretch;
+}}
+.uptime-bar .day {{
+  flex: 1;
+  border-radius: 2px;
+  min-width: 1px;
+  position: relative;
+}}
+.uptime-bar .day.good {{ background: var(--green); opacity: 0.8; }}
+.uptime-bar .day.warn {{ background: var(--yellow); opacity: 0.8; }}
+.uptime-bar .day.bad {{ background: var(--red); opacity: 0.8; }}
+.uptime-bar .day.none {{ background: var(--border); opacity: 0.5; }}
+.uptime-bar .day:hover {{ opacity: 1; }}
+.uptime-bar .day .tip {{
+  display: none;
+  position: absolute;
+  bottom: calc(100% + 6px);
+  left: 50%;
+  transform: translateX(-50%);
+  background: var(--card);
+  border: 1px solid var(--border);
+  padding: 0.25rem 0.5rem;
+  border-radius: 4px;
+  font-size: 0.7rem;
+  white-space: nowrap;
+  z-index: 10;
+  color: var(--text);
+  box-shadow: 0 2px 4px rgba(0,0,0,0.2);
+}}
+.uptime-bar .day:hover .tip {{ display: block; }}
+.history-legend {{
+  display: flex;
+  justify-content: space-between;
+  margin-top: 0.25rem;
+  font-size: 0.7rem;
+  color: var(--muted);
+}}
 footer {{
   margin-top: 2rem;
   text-align: center;
@@ -312,6 +435,7 @@ footer a:hover {{ text-decoration: underline; }}
   <div class="services">
     {service_rows}
   </div>
+  {history_html}
   <footer>
     Updated {updated} &middot; Powered by <a href="https://github.com/agent-cyanez/beacon">Beacon</a>
   </footer>
@@ -327,8 +451,72 @@ SERVICE_ROW = """<div class="service">
   </div>
 </div>"""
 
+HISTORY_ROW = """<div class="history-row">
+  <div class="history-header">
+    <span class="history-name">{name}</span>
+    <span class="history-pct">{pct}</span>
+  </div>
+  <div class="uptime-bar">{days_html}</div>
+  <div class="history-legend"><span>{days_ago}d ago</span><span>Today</span></div>
+</div>"""
 
-def render_page(services, title, description, show_response_time=False):
+HISTORY_DAY = '<div class="day {cls}" title="{date}: {pct}"><span class="tip">{date}: {pct}</span></div>'
+
+
+def day_class(pct):
+    if pct is None:
+        return "none"
+    if pct >= 99.0:
+        return "good"
+    if pct >= 95.0:
+        return "warn"
+    return "bad"
+
+
+def render_history(services, uptime_db, history_days):
+    if uptime_db is None:
+        return ""
+    service_names = sorted(set(s["name"] for s in services))
+    if not service_names:
+        return ""
+    today = time.localtime()
+    dates = []
+    for i in range(history_days - 1, -1, -1):
+        t = time.localtime(time.time() - i * 86400)
+        dates.append(time.strftime("%Y-%m-%d", t))
+    rows = []
+    for name in service_names:
+        daily = uptime_db.daily_uptime(name, history_days)
+        if not daily:
+            continue
+        overall = uptime_db.overall_uptime(name, history_days)
+        pct_str = f"{overall:.2f}%" if overall is not None else "—"
+        days_html_parts = []
+        for d in dates:
+            pct = daily.get(d)
+            cls = day_class(pct)
+            pct_label = f"{pct:.1f}%" if pct is not None else "No data"
+            days_html_parts.append(HISTORY_DAY.format(
+                cls=cls, date=d, pct=pct_label,
+            ))
+        rows.append(HISTORY_ROW.format(
+            name=html.escape(name),
+            pct=pct_str,
+            days_html="".join(days_html_parts),
+            days_ago=history_days,
+        ))
+    if not rows:
+        return ""
+    return (
+        '<div class="history-section">'
+        '<div class="history-title">{days}-Day Uptime</div>'
+        '<div class="services">{rows}</div>'
+        '</div>'
+    ).format(days=history_days, rows="\n".join(rows))
+
+
+def render_page(services, title, description, show_response_time=False, uptime_db=None,
+                history_days=90):
     level, label = overall_status(services)
     rows = []
     for s in services:
@@ -347,12 +535,14 @@ def render_page(services, title, description, show_response_time=False):
     if description:
         desc_html = f'<p class="description">{html.escape(description)}</p>'
     updated = time.strftime("%Y-%m-%d %H:%M:%S %Z")
+    history = render_history(services, uptime_db, history_days)
     return PAGE_TEMPLATE.format(
         title=html.escape(title),
         description_html=desc_html,
         overall_level=level,
         overall_label=html.escape(label),
         service_rows="\n    ".join(rows),
+        history_html=history,
         updated=updated,
     )
 
@@ -400,13 +590,16 @@ class Handler(http.server.BaseHTTPRequestHandler):
 
 
 def poller(docker, service_filter, endpoints, endpoint_timeout, title, description,
-           show_response_time):
+           show_response_time, uptime_db, history_days):
     while True:
         try:
             services = collect_status(docker, service_filter)
             if endpoints:
                 services.extend(collect_endpoint_status(endpoints, endpoint_timeout))
-            page = render_page(services, title, description, show_response_time)
+            if uptime_db:
+                uptime_db.record(services)
+            page = render_page(services, title, description, show_response_time,
+                               uptime_db, history_days)
             store.update(page)
         except Exception as e:
             print(f"[poller error] {e}", file=sys.stderr)
@@ -428,19 +621,28 @@ def main():
     if endpoints:
         print(f"  Endpoints: {', '.join(e['name'] for e in endpoints)}")
 
+    uptime_db = None
+    if HISTORY_DB:
+        uptime_db = UptimeDB(HISTORY_DB, HISTORY_DAYS)
+        print(f"  History: {HISTORY_DB} ({HISTORY_DAYS} days)")
+
     docker = DockerClient(DOCKER_SOCKET)
 
     services = collect_status(docker, service_filter)
     if endpoints:
         services.extend(collect_endpoint_status(endpoints, ENDPOINT_TIMEOUT))
-    page = render_page(services, SITE_TITLE, SITE_DESCRIPTION, SHOW_RESPONSE_TIME)
+    if uptime_db:
+        uptime_db.record(services)
+    page = render_page(services, SITE_TITLE, SITE_DESCRIPTION, SHOW_RESPONSE_TIME,
+                       uptime_db, HISTORY_DAYS)
     store.update(page)
     print(f"  Found {len(services)} services")
 
     t = threading.Thread(
         target=poller,
         args=(docker, service_filter, endpoints, ENDPOINT_TIMEOUT,
-              SITE_TITLE, SITE_DESCRIPTION, SHOW_RESPONSE_TIME),
+              SITE_TITLE, SITE_DESCRIPTION, SHOW_RESPONSE_TIME,
+              uptime_db, HISTORY_DAYS),
         daemon=True,
     )
     t.start()
