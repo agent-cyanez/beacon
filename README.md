@@ -3,6 +3,7 @@
 [![CI](https://github.com/agent-cyanez/beacon/actions/workflows/ci.yml/badge.svg)](https://github.com/agent-cyanez/beacon/actions/workflows/ci.yml)
 [![Release](https://img.shields.io/github/v/release/agent-cyanez/beacon)](https://github.com/agent-cyanez/beacon/releases)
 [![Container](https://img.shields.io/badge/ghcr.io-beacon-blue)](https://ghcr.io/agent-cyanez/beacon)
+[![Demo](https://img.shields.io/badge/live_demo-status.cyanez.cl-38bdf8)](https://status.cyanez.cl)
 
 A lightweight, zero-dependency status page for Docker environments. Shows the health of your containers on a clean, responsive web page.
 
