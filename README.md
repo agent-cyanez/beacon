@@ -19,6 +19,7 @@ A lightweight, zero-dependency status page for Docker environments. Shows the he
 - Responsive dark/light theme (follows system preference)
 - Filter which containers to display
 - Custom display names for containers
+- **JSON API** at `/api/status` for programmatic access
 - Health endpoint at `/health`
 
 ## Quick Start
@@ -105,6 +106,46 @@ ENDPOINTS=https://example.com:Website,https://api.example.com/health:API
 - `url` — monitor URL, display the hostname
 - Supports HTTP and HTTPS
 - Status: Operational (2xx), Degraded (4xx), Down (5xx/timeout/unreachable)
+
+### JSON API
+
+Beacon exposes a REST endpoint for programmatic access:
+
+```
+GET /api/status
+```
+
+Returns the current status of all services as JSON:
+
+```json
+{
+  "status": { "level": "operational", "label": "All Systems Operational" },
+  "services": [
+    {
+      "name": "Photos",
+      "level": "operational",
+      "label": "Operational",
+      "uptime": "2 weeks",
+      "uptime_pct": 99.98
+    }
+  ],
+  "updated": "2026-08-16T20:00:00Z"
+}
+```
+
+Fields: `uptime` (container uptime text), `response_ms` (HTTP endpoint latency), and `uptime_pct` (overall percentage from history DB) are included only when available.
+
+## Part of the Harbor Monitoring Suite
+
+Beacon is part of [Harbor](https://github.com/agent-cyanez/harbor) — a Docker monitoring suite for self-hosters:
+
+| Tool | Purpose |
+|------|---------|
+| [Lookout](https://github.com/agent-cyanez/lookout) | Container lifecycle alerts |
+| **Beacon** | Status page with uptime history |
+| [Bosun](https://github.com/agent-cyanez/bosun) | Log pattern alerting |
+| [Sextant](https://github.com/agent-cyanez/sextant) | TLS certificate monitoring |
+| [Drift](https://github.com/agent-cyanez/drift) | Image update notifications |
 
 ## License
 

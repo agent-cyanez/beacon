@@ -432,5 +432,85 @@ class TestRenderPageWithHistory(unittest.TestCase):
         os.rmdir(tmpdir)
 
 
+class TestBuildApiResponse(unittest.TestCase):
+    def test_basic_response(self):
+        services = [
+            {"name": "App", "level": "operational", "label": "Operational", "uptime": "2 weeks", "response_ms": None},
+            {"name": "DB", "level": "down", "label": "Down", "uptime": "", "response_ms": None},
+        ]
+        result = beacon.build_api_response(services)
+        self.assertEqual(result["status"]["level"], "down")
+        self.assertEqual(result["status"]["label"], "Partial Outage")
+        self.assertEqual(len(result["services"]), 2)
+        self.assertEqual(result["services"][0]["name"], "App")
+        self.assertEqual(result["services"][0]["uptime"], "2 weeks")
+        self.assertNotIn("response_ms", result["services"][0])
+        self.assertIn("updated", result)
+
+    def test_response_ms_included(self):
+        services = [
+            {"name": "Blog", "level": "operational", "label": "Operational", "uptime": "", "response_ms": 42},
+        ]
+        result = beacon.build_api_response(services)
+        self.assertEqual(result["services"][0]["response_ms"], 42)
+
+    def test_uptime_pct_with_db(self):
+        tmpdir = tempfile.mkdtemp()
+        db_path = os.path.join(tmpdir, "test.db")
+        db = beacon.UptimeDB(db_path)
+        services = [
+            {"name": "App", "level": "operational", "label": "Operational", "uptime": "", "response_ms": None},
+        ]
+        db.record(services)
+        result = beacon.build_api_response(services, uptime_db=db, history_days=90)
+        self.assertIn("uptime_pct", result["services"][0])
+        self.assertEqual(result["services"][0]["uptime_pct"], 100.0)
+        os.unlink(db_path)
+        os.rmdir(tmpdir)
+
+    def test_empty_services(self):
+        result = beacon.build_api_response([])
+        self.assertEqual(result["status"]["level"], "unknown")
+        self.assertEqual(result["services"], [])
+
+
+class TestStatusStoreApi(unittest.TestCase):
+    def test_store_and_retrieve_api(self):
+        s = beacon.StatusStore()
+        api_data = {"status": {"level": "operational"}, "services": []}
+        s.update("<html>test</html>", api_data)
+        self.assertEqual(s.get(), "<html>test</html>")
+        self.assertEqual(s.get_api(), api_data)
+
+    def test_api_empty_initially(self):
+        s = beacon.StatusStore()
+        self.assertEqual(s.get_api(), {})
+
+
+class TestApiHandler(unittest.TestCase):
+    def _make_handler(self, path):
+        handler = MagicMock(spec=beacon.Handler)
+        handler.path = path
+        handler.wfile = MagicMock()
+        handler.send_response = MagicMock()
+        handler.send_header = MagicMock()
+        handler.end_headers = MagicMock()
+        return handler
+
+    def test_api_status_returns_json(self):
+        api_data = {"status": {"level": "operational", "label": "All Systems Operational"}, "services": [], "updated": "2026-01-01T00:00:00Z"}
+        beacon.store.update("<html></html>", api_data)
+        handler = self._make_handler("/api/status")
+        beacon.Handler.do_GET(handler)
+        handler.send_response.assert_called_with(200)
+        handler.send_header.assert_any_call("Content-Type", "application/json")
+
+    def test_api_status_503_when_empty(self):
+        beacon.store = beacon.StatusStore()
+        handler = self._make_handler("/api/status")
+        beacon.Handler.do_GET(handler)
+        handler.send_response.assert_called_with(503)
+
+
 if __name__ == "__main__":
     unittest.main()
