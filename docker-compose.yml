@@ -30,12 +30,14 @@ services:
         lookout:Lookout,
         bosun:Bosun,
         sextant:Sextant,
-        drift:Drift
+        drift:Drift,
+        soundings:Soundings
       - >-
         ENDPOINTS=https://example.com:Blog,
         https://git.example.com:Forgejo,
-        https://nas.example.ts.net:Beacon (Public)
+        https://status.example.com:Status Page
       - SHOW_RESPONSE_TIME=true
+      - REFRESH_INTERVAL=30
 
 volumes:
   beacon-data:

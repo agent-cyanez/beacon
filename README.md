@@ -69,6 +69,7 @@ All configuration is via environment variables:
 | `POLL_INTERVAL` | `15` | Seconds between Docker queries |
 | `PORT` | `8585` | HTTP server port |
 | `DOCKER_HOST` | `/var/run/docker.sock` | Docker socket path |
+| `REFRESH_INTERVAL` | `30` | Auto-refresh interval in seconds (0 to disable) |
 | `HISTORY_DB` | `/data/beacon.db` | SQLite database path for uptime history |
 | `HISTORY_DAYS` | `90` | Number of days to retain in uptime history |
 
