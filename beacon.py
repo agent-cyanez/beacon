@@ -26,6 +26,7 @@ SERVICES = os.environ.get("SERVICES", "")
 ENDPOINTS = os.environ.get("ENDPOINTS", "")
 ENDPOINT_TIMEOUT = int(os.environ.get("ENDPOINT_TIMEOUT", "10"))
 SHOW_RESPONSE_TIME = os.environ.get("SHOW_RESPONSE_TIME", "false").lower() == "true"
+REFRESH_INTERVAL = int(os.environ.get("REFRESH_INTERVAL", "30"))
 HISTORY_DB = os.environ.get("HISTORY_DB", "/data/beacon.db")
 HISTORY_DAYS = int(os.environ.get("HISTORY_DAYS", "90"))
 
@@ -271,6 +272,7 @@ PAGE_TEMPLATE = """<!DOCTYPE html>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>{title}</title>
+{refresh_meta}
 <style>
 *, *::before, *::after {{ box-sizing: border-box; margin: 0; padding: 0; }}
 :root {{
@@ -516,7 +518,7 @@ def render_history(services, uptime_db, history_days):
 
 
 def render_page(services, title, description, show_response_time=False, uptime_db=None,
-                history_days=90):
+                history_days=90, refresh_interval=0):
     level, label = overall_status(services)
     rows = []
     for s in services:
@@ -534,6 +536,9 @@ def render_page(services, title, description, show_response_time=False, uptime_d
     desc_html = ""
     if description:
         desc_html = f'<p class="description">{html.escape(description)}</p>'
+    refresh_meta = ""
+    if refresh_interval > 0:
+        refresh_meta = f'<meta http-equiv="refresh" content="{refresh_interval}">'
     updated = time.strftime("%Y-%m-%d %H:%M:%S %Z")
     history = render_history(services, uptime_db, history_days)
     return PAGE_TEMPLATE.format(
@@ -541,6 +546,7 @@ def render_page(services, title, description, show_response_time=False, uptime_d
         description_html=desc_html,
         overall_level=level,
         overall_label=html.escape(label),
+        refresh_meta=refresh_meta,
         service_rows="\n    ".join(rows),
         history_html=history,
         updated=updated,
@@ -636,7 +642,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
 
 
 def poller(docker, service_filter, endpoints, endpoint_timeout, title, description,
-           show_response_time, uptime_db, history_days):
+           show_response_time, uptime_db, history_days, refresh_interval=0):
     while True:
         try:
             services = collect_status(docker, service_filter)
@@ -645,7 +651,7 @@ def poller(docker, service_filter, endpoints, endpoint_timeout, title, descripti
             if uptime_db:
                 uptime_db.record(services)
             page = render_page(services, title, description, show_response_time,
-                               uptime_db, history_days)
+                               uptime_db, history_days, refresh_interval)
             api = build_api_response(services, uptime_db, history_days)
             store.update(page, api)
         except Exception as e:
@@ -680,8 +686,11 @@ def main():
         services.extend(collect_endpoint_status(endpoints, ENDPOINT_TIMEOUT))
     if uptime_db:
         uptime_db.record(services)
+    if REFRESH_INTERVAL > 0:
+        print(f"  Auto-refresh: {REFRESH_INTERVAL}s")
+
     page = render_page(services, SITE_TITLE, SITE_DESCRIPTION, SHOW_RESPONSE_TIME,
-                       uptime_db, HISTORY_DAYS)
+                       uptime_db, HISTORY_DAYS, REFRESH_INTERVAL)
     api = build_api_response(services, uptime_db, HISTORY_DAYS)
     store.update(page, api)
     print(f"  Found {len(services)} services")
@@ -690,7 +699,7 @@ def main():
         target=poller,
         args=(docker, service_filter, endpoints, ENDPOINT_TIMEOUT,
               SITE_TITLE, SITE_DESCRIPTION, SHOW_RESPONSE_TIME,
-              uptime_db, HISTORY_DAYS),
+              uptime_db, HISTORY_DAYS, REFRESH_INTERVAL),
         daemon=True,
     )
     t.start()

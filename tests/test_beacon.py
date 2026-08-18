@@ -512,5 +512,28 @@ class TestApiHandler(unittest.TestCase):
         handler.send_response.assert_called_with(503)
 
 
+class TestAutoRefresh(unittest.TestCase):
+    def test_refresh_meta_included(self):
+        services = [
+            {"name": "App", "level": "operational", "label": "OK", "uptime": "", "response_ms": None},
+        ]
+        result = beacon.render_page(services, "Test", "", refresh_interval=30)
+        self.assertIn('<meta http-equiv="refresh" content="30">', result)
+
+    def test_refresh_meta_excluded_when_zero(self):
+        services = [
+            {"name": "App", "level": "operational", "label": "OK", "uptime": "", "response_ms": None},
+        ]
+        result = beacon.render_page(services, "Test", "", refresh_interval=0)
+        self.assertNotIn("http-equiv", result)
+
+    def test_refresh_meta_excluded_by_default(self):
+        services = [
+            {"name": "App", "level": "operational", "label": "OK", "uptime": "", "response_ms": None},
+        ]
+        result = beacon.render_page(services, "Test", "")
+        self.assertNotIn("http-equiv", result)
+
+
 if __name__ == "__main__":
     unittest.main()

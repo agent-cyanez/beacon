@@ -30,12 +30,14 @@ services:
         lookout:Lookout,
         bosun:Bosun,
         sextant:Sextant,
-        drift:Drift
+        drift:Drift,
+        soundings:Soundings
       - >-
         ENDPOINTS=https://cyanez.cl:Blog,
         https://git.cyanez.cl:Forgejo,
-        https://nos-nas.taile6c96c.ts.net:Beacon (Public)
+        https://status.cyanez.cl:Status Page
       - SHOW_RESPONSE_TIME=true
+      - REFRESH_INTERVAL=30
 
 volumes:
   beacon-data:
