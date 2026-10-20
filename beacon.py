@@ -602,6 +602,14 @@ class StatusStore:
 store = StatusStore()
 
 
+class Server(http.server.HTTPServer):
+    def handle_error(self, request, client_address):
+        # Clients that disconnect mid-response are routine, not errors
+        if isinstance(sys.exc_info()[1], (BrokenPipeError, ConnectionResetError)):
+            return
+        super().handle_error(request, client_address)
+
+
 class Handler(http.server.BaseHTTPRequestHandler):
     def do_GET(self):
         if self.path == "/health":
@@ -704,7 +712,7 @@ def main():
     )
     t.start()
 
-    server = http.server.HTTPServer(("0.0.0.0", LISTEN_PORT), Handler)
+    server = Server(("0.0.0.0", LISTEN_PORT), Handler)
 
     def handle_signal(signum, frame):
         print(f"\nReceived signal {signum}, shutting down")

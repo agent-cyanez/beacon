@@ -537,3 +537,21 @@ class TestAutoRefresh(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestServerHandleError(unittest.TestCase):
+    def _call(self, exc):
+        server = beacon.Server.__new__(beacon.Server)
+        with patch("http.server.HTTPServer.handle_error") as parent:
+            try:
+                raise exc
+            except Exception:
+                server.handle_error(None, ("127.0.0.1", 1))
+        return parent.called
+
+    def test_client_disconnect_is_silent(self):
+        self.assertFalse(self._call(BrokenPipeError()))
+        self.assertFalse(self._call(ConnectionResetError()))
+
+    def test_other_errors_still_reported(self):
+        self.assertTrue(self._call(ValueError()))
