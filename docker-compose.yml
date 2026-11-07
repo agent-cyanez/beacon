@@ -3,6 +3,10 @@ services:
     build: .
     container_name: beacon
     restart: unless-stopped
+    # SERVICES and ENDPOINTS come from .env (see .env.example).
+    env_file:
+      - path: .env
+        required: false
     ports:
       - "127.0.0.1:8585:8585"
     volumes:
@@ -12,30 +16,6 @@ services:
       - SITE_TITLE=Service Status
       - SITE_DESCRIPTION=Self-hosted services
       - POLL_INTERVAL=15
-      # Glob patterns supported (fnmatch).
-      # Format: pattern:Display Name (or just pattern)
-      - >-
-        SERVICES=ntfy:Notifications,
-        forgejo:Forgejo,
-        syncthing:Syncthing,
-        filebrowser:File Browser,
-        homepage:Homepage,
-        immich_server:Immich,
-        blog-web-*:Blog,
-        reader-wallabag-1:Wallabag,
-        vikunja:Vikunja,
-        my-tool:My Tool,
-        deploy-webhook:Deployments,
-        beacon:Beacon,
-        lookout:Lookout,
-        bosun:Bosun,
-        sextant:Sextant,
-        drift:Drift,
-        soundings:Soundings
-      - >-
-        ENDPOINTS=https://example.com:Blog,
-        https://git.example.com:Forgejo,
-        https://status.example.com:Status Page
       - SHOW_RESPONSE_TIME=true
       - REFRESH_INTERVAL=30
 
